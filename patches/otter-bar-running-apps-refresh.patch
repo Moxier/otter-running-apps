@@ -1,0 +1,58 @@
+--- a/src/main.zig
++++ b/src/main.zig
+@@ -291,6 +291,7 @@
+     const wayland_fd = wayland_context.connection.display.getFd();
+     const config_watcher_fd = Config.getWatcherFd();
+ 
++    var running_apps_deadline: i64 = 0;
+     while (wayland_context.running) {
+         _ = wayland_context.connection.display.flush();
+ 
+@@ -448,6 +449,24 @@
+                 }
+             }
+         }
++        // ABI v1 has no plugin timer/fd registration. Service running-apps on
++        // the host thread; no plugin worker may touch Wayland or host state.
++        var has_running_apps = false;
++        for (wayland_context.outputs.slice()) |*output| {
++            if (output.root_container) |*rc| {
++                for (rc.plugin_slots.slice()) |*slot| {
++                    if (slot.instance != null and std.mem.eql(u8, slot.pluginId(), "running-apps")) {
++                        has_running_apps = true;
++                    }
++                }
++            }
++        }
++        if (has_running_apps) {
++            output_deadline_ms = if (output_deadline_ms) |current|
++                @min(current, running_apps_deadline)
++            else
++                running_apps_deadline;
++        }
+         const sysinfo_deadline_ms = if (globals.sysinfo) |si| si.last_refresh_ms + si.refresh_interval_ms else null;
+         const poll_timeout_ms = periodicPollTimeoutMs(
+             now_ms,
+@@ -469,6 +488,22 @@
+         if (keyboard_repeat_fd_index) |idx| {
+             if (fds[idx].revents & posix.POLL.IN != 0) {
+                 if (wayland_context.keyboard) |*keyboard| keyboard.handleRepeat();
++            }
++        }
++
++        const running_apps_now = monotonicMs();
++        if (has_running_apps and running_apps_now >= running_apps_deadline) {
++            running_apps_deadline = running_apps_now + 100;
++            for (wayland_context.outputs.slice()) |*output| {
++                if (output.root_container) |*rc| {
++                    for (rc.plugin_slots.slice()) |*slot| {
++                        if (slot.instance != null and std.mem.eql(u8, slot.pluginId(), "running-apps")) {
++                            output.full_redraw = true;
++                            output.requestFrame(&wayland_context);
++                            break;
++                        }
++                    }
++                }
+             }
+         }
+ 
