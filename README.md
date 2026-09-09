@@ -1,282 +1,189 @@
-# Running Apps for Otter + niri — v0.5.0
+# Otter Running Apps
 
-A small C++17 native Otter bar plugin: one themed icon per application with open
-niri windows, active-app highlighting, and left-click focus. Applications with
-no open windows (background daemons, tray-only processes) are not listed.
+A compact application switcher for **Otter Shell + niri**. Shows centered app
+icons for the currently focused workspace, with active-app highlighting and
+left-click window switching.
 
-**Integration status:** the plugin compiles and passes the included C ABI and
-mock niri socket tests. A previous v0.1.0 read-only probe of the real niri session produced
-three app cells and one active cell. Rendering/clicks in the actual Otter panel
-have not been tested.
-**Reliable live refresh requires the included Otter bar patch.** The current
-unmodified ABI cannot schedule a timer or watch a plugin socket. Without the
-patch, the plugin reads events on ordinary bar redraws; changes can be delayed
-until other widgets or input cause a redraw. This is not an instantly updating
-standalone plugin on an unmodified host.
+## Features
 
-## v0.5.0 — simpler, no animation
+- One icon per app, with a small `2`–`9+` badge for multiple windows.
+- Icons follow niri's window layout order and stay centered as apps open or close.
+- Click an inactive app to restore its last-focused window; click the active app
+  to cycle through its windows on the current workspace.
+- Desktop-entry icon lookup, including `StartupWMClass`, unambiguous casing
+  differences, and common Flatpak export locations.
+- Overflow paging with `>` instead of expanding across the bar.
+- Direct niri IPC, reconnect handling, and no animation or background threads.
 
-Animation code and its host-patch instructions have been removed. No animation
-setting is needed; older `OTTER_RUNNING_APPS_ANIMATIONS` values are ignored.
-Centering, current-workspace filtering, layout order, count badges, and clicking
-are preserved. Clipping uses one shared check, and unused group state is removed.
+## Before installing
 
-Visible cells are centered inside the plugin area, including short overflow
-pages. Keep the plugin in `layout_center` for bar-centered placement. Workspace
-changes reset paging. On multiple monitors all instances follow niri's single
-focused workspace: this ABI does not identify each instance's output.
+**Refresh limitation:** the inspected Otter ABI has no plugin timer or socket
+registration. On an unmodified bar, this plugin processes events when the bar
+redraws, so updates may be delayed. The included [refresh patch](patches/otter-bar-running-apps-refresh.patch)
+provides a 100 ms update interval, at the cost of redrawing affected bars up to
+10 times per second even when idle. See [host integration](#host-integration).
 
-Run `./install.sh`, then restart your existing bar to update. **The earlier
-refresh limitation still applies**; removing animation does not add a host timer
-or guarantee instant updates on the packaged bar.
+Target: **Otter Bar v0.11.113's complete ABI-v1 layout**, including `sd_bar_item`,
+or a later compatible layout. Older ABI-v1 builds with shorter host structs are
+not supported; the ABI version number alone is not a compatibility check.
 
-## Behavior
+On multiple monitors, all instances follow niri's **single focused workspace**.
+The plugin ABI does not identify the monitor hosting each instance.
 
-- Groups by exact, case-sensitive niri `app_id`. Unknown/empty IDs remain separate
-  windows, so unrelated apps are never merged. Only the focused workspace is
-  included; each bar instance has its own event connection.
-- Clicking an inactive app focuses its last-focused window (first window in layout order if
-  none has been focused since connection). Clicking the active app cycles its
-  windows in layout order (left-to-right, then top-to-bottom). Focus highlight follows confirmed niri
-  events, not the click request.
-- Resolves XDG desktop-file IDs and `StartupWMClass` to `Icon=` names; honors
-  user-over-system precedence and `Hidden=true` masks. Includes common Flatpak
-  export paths. No desktop `Exec=` command is executed. Desktop entries are
-  indexed at plugin initialization; restart the bar after installing new apps.
-- Missing desktop entries and absolute-file icons use Otter's bundled `sparkles`
-  icon. A desktop entry whose named icon is missing from the selected theme may
-  still appear blank: the ABI cannot report whether icon lookup succeeded.
-- Reserves eight 36-pixel cells (288 logical pixels), even when empty. This avoids
-  relying on automatic plugin width remeasurement, which this host does not do.
-  If there are more apps, the last cell is `>` and cycles pages. Reduce or enlarge
-  the reservation with `OTTER_RUNNING_APPS_SLOTS=2..32` in the bar's environment.
-  At least 72 logical pixels are needed for usable overflow paging.
-- No animation, motion bookkeeping, or extra frame requests while rendering.
-  The active-app background still uses Otter's normal selected state.
-- Disconnects clear stale icons, retries the same `NIRI_SOCKET` every second, and
-  accepts niri's new authoritative snapshot on reconnection. After a compositor
-  restart with a different socket path, restart the bar from the new session.
+## Install
 
-## Compatibility and sources checked
-
-Inspected on 2026-09-08:
-
-- [Otter plugin documentation](https://docs.otter-shell.org/developers/plugins).
-- [otter-bar](https://git.pika-os.com/otter-shell/otter-bar), commit
-  `9ebc88c21c22d2c4a305b28e65147d5839788da2`, and release `v0.11.113`.
-  The release and this commit have identical `src/main.zig`.
-- [Otter examples](https://git.pika-os.com/otter-shell/otter-shell-plugins), commit
-  `82fa3c9587d4791b973c186cc98c96b8e95f1d86`; especially hello-label and cmd-watch.
-- [niri IPC](https://github.com/niri-wm/niri/wiki/IPC) and
-  [niri request/action types](https://niri-wm.github.io/niri/niri_ipc/enum.Action.html).
-
-The unchanged upstream C header is included. Target **Otter v0.11.113's full
-ABI-v1 host layout, including `sd_bar_item`**, or a later compatible layout.
-Do not load this into an ancient ABI-v1 binary with a shorter host struct: ABI
-major alone does not establish compatibility, and there is no struct-size field
-for safely probing those old layouts. A full-size host with a null `sd_bar_item`
-is rejected. The current host dispatches only left clicks as plugin CLICK events;
-the event struct itself has no mouse-button field.
-
-The plugin uses niri's line-delimited Unix-socket IPC directly. Requests:
-
-```json
-"EventStream"
-{"Action":{"FocusWindow":{"id":42}}}
-```
-
-Focus uses a separate connection because the event-stream connection does not
-accept later requests. Unknown event types/fields are ignored. IDs stay unsigned
-64-bit integers, including values above JavaScript's precise-integer range.
-
-## Build and test on PikaOS
-
-With Otter and niri already installed:
+With Otter Bar and niri already installed on PikaOS:
 
 ```sh
-sudo apt install build-essential python3
+sudo apt install git build-essential python3
+git clone https://github.com/Moxier/otter-running-apps.git
 cd otter-running-apps
+./install.sh
+```
+
+The installer builds the plugin and installs it under
+`$XDG_DATA_HOME/otter-shell/plugins/running-apps`, or
+`~/.local/share/otter-shell/plugins/running-apps` when `XDG_DATA_HOME` is unset.
+It does not change your configuration or restart the bar. Build locally to avoid
+cross-distribution libc/libstdc++ compatibility issues.
+
+Add or update the center layout in `~/.config/otter-shell/otter-bar.conf`:
+
+```ini
+layout_center = "plugin:running-apps"
+```
+
+Preserve any other widgets you want in that layout. Enable the plugin in
+`~/.config/otter-shell/plugins.conf`:
+
+```ini
+running-apps_enabled = true
+```
+
+Restart your bar using your session's normal mechanism. It must inherit
+`NIRI_SOCKET` and `WAYLAND_DISPLAY` from niri. Avoid starting a second bar over
+an existing one.
+
+## Configuration and behavior
+
+| Setting | Default | Description |
+| --- | --- | --- |
+| `OTTER_RUNNING_APPS_SLOTS` | `8` | Reserved icon cells, from `2` to `32`; set in the bar's launch environment. |
+
+Each cell is 36 logical pixels wide. Eight cells reserve 288 pixels, including
+when the workspace is empty. Visible icons are centered within that reservation.
+Overflow pages reset when switching workspaces.
+
+Groups use exact niri app IDs. Apps without an ID stay as separate windows.
+A group takes the position of its first window in layout order; floating windows
+follow tiled windows. Window counts and click cycling exclude other workspaces.
+Only apps with open windows appear—not background or tray-only processes.
+
+## Icons and troubleshooting
+
+- **Generic icon:** no matching desktop entry was found, or its `Icon=` uses an
+  absolute file path. These cases use Otter's bundled `sparkles` icon.
+- **Blank icon:** a matching desktop entry may name an icon missing from the
+  selected theme. This ABI cannot report a failed icon lookup.
+- **Newly installed app:** restart the bar to refresh the desktop-entry index.
+- **Empty or delayed panel:** check the enable key, layout, host compatibility,
+  and `NIRI_SOCKET` in the bar's environment. Try `niri msg --json windows` in a
+  terminal inside your niri session. See the refresh limitation above.
+- **After restarting niri:** restart the bar from the new session if the socket
+  path changed. Disconnects otherwise clear stale icons and retry every second.
+
+Pinning, previews, tooltips, per-monitor workspace filtering, and animation are
+not included.
+
+## Build and test
+
+```sh
 ./build.sh
 ./test.sh
 ```
 
-No Zig, downloaded build dependency, Python package, or Otter SDK is needed for
-the plugin. `json.hpp` v3.12.0 is vendored with its license. The plugin uses libc
-and libstdc++; **build on your PikaOS machine** instead of copying a binary built
-against another distribution's libraries. `make` and `make test` are aliases.
+`make` and `make test` are equivalent. The plugin needs a C++17 compiler; Python 3
+runs the integration tests. No Zig toolchain or Otter SDK is needed to build the
+plugin. The JSON dependency is vendored, so the plugin build works offline.
 
-Tests cover centering, current-workspace filtering, stale workspace clicks, layout/workspace reordering, count badges, grouping, focus/MRU/cycling, unknown IDs, snapshot replacement,
-malformed input, future events, desktop-file precedence, ABI loading, exact
-64-bit focus requests, fragmented socket data, overflow paging, clipping,
-reconnect, stale clicks, and destruction. Socket tests require permission to
-create a temporary local Unix socket; no real desktop is contacted.
+Tests cover grouping, layout order, centered coordinates, workspace filtering,
+badges, focus requests, stale clicks, clipping, malformed events, reconnects and
+unloading. Integration tests use a temporary Unix socket and a mock renderer;
+they do not manipulate your desktop. See [validation notes](VALIDATION.md).
 
-For a separate **read-only** live IPC probe from a niri terminal:
+For a separate read-only probe against your real niri session:
 
 ```sh
 c++ -std=c++17 -Iinclude tests/probe.cpp -ldl -o build/live-probe
 ./build/live-probe ./build/plugins/running-apps/libotter_plugin_running_apps.so
 ```
 
-This loads the actual plugin with a mock renderer for two seconds and reports
-cell counts without names/titles or focus actions. Zero cells can also mean an
-unavailable socket, so it is only a basic diagnostic.
+This reports rendered cell counts without sending focus actions. Zero cells can
+also mean an unavailable socket; it is a basic diagnostic, not a full UI test.
 
-## Install and enable
+## Host integration
 
-```sh
-./install.sh
-```
+The refresh patch targets Otter Bar `v0.11.113`. Applying it changes **Otter Bar
+itself**, not the plugin. Use a separate source checkout and keep your packaged
+bar available for rollback.
 
-This builds and installs only into
-`${XDG_DATA_HOME:-$HOME/.local/share}/otter-shell/plugins/running-apps/`.
-It does not edit your configuration or restart the bar. The installer uses atomic
-library replacement so it does not truncate a loaded `.so`. Restart the bar after
-upgrades so the old library is unloaded.
-
-Add the following to an existing layout in
-`~/.config/otter-shell/otter-bar.conf`, preserving your other widgets:
-
-```ini
-layout_center = plugin:running-apps
-```
-
-In `~/.config/otter-shell/plugins.conf`, set or update this key:
-
-```ini
-running-apps_enabled = true
-```
-
-Launch/restart the bar from your niri session so it inherits `NIRI_SOCKET` and
-`WAYLAND_DISPLAY`. Check the session first:
-
-```sh
-printf '%s\n' "$NIRI_SOCKET"
-niri msg --json windows
-```
-
-For a temporary development install, use the build directory as a discovery root:
-
-```sh
-OTTER_PLUGIN_PATH="$PWD/build/plugins" otter-bar
-```
-
-Run only one bar instance per intended panel during testing. If your session
-supervises the bar, stop/restart it using that session's existing mechanism.
-Do not launch a second bar over the existing panel.
-
-## Enable reliable 100 ms refresh (host integration)
-
-`patches/otter-bar-running-apps-refresh.patch` adds a main-loop deadline only when
-an attached `running-apps` slot exists. It requests a redraw every 100 ms on those
-outputs. All IPC and rendering stay on the host thread. It never sleeps in a
-plugin callback, starts a worker, modifies global signal handling, or calls
-Wayland from another thread.
-
-This deliberately small workaround redraws the affected **whole bar at up to
-10 Hz**, including when the desktop is idle. It is a functional integration
-compromise, not a zero-cost event-driven implementation. Hidden/throttled Wayland
-surfaces can delay callbacks. A future upstream timer/fd-registration API should
-replace the patch. Changing `+ 100` to `+ 250` reduces redraw frequency at the
-cost of response time.
-
-The patch applies cleanly to inspected source and `v0.11.113`. A local host with
-both historical patches was built and passed upstream tests on 2026-09-09;
-actual panel behavior with that custom host is not yet verified. Use a separate local build so you can
-return to the packaged bar immediately. Upstream's release tag has pinned remote
-dependencies; its development HEAD instead expects sibling source checkouts.
-
-From the plugin directory, prepare the source:
+From this repository's directory, in bash or another POSIX shell:
 
 ```sh
 PLUGIN_DIR="$PWD"
 git clone --branch v0.11.113 --depth 1 \
-  https://git.pika-os.com/otter-shell/otter-bar.git otter-bar-v0.11.113
-cd otter-bar-v0.11.113
+  https://git.pika-os.com/otter-shell/otter-bar.git ../otter-bar-running-apps
+cd ../otter-bar-running-apps
 git apply --check "$PLUGIN_DIR/patches/otter-bar-running-apps-refresh.patch"
 git apply "$PLUGIN_DIR/patches/otter-bar-running-apps-refresh.patch"
-```
-
-Build with the **Zig 0.16.0 toolchain required by that release**. Unlike the C++
-plugin, this downloads Otter's pinned library dependencies. The host's build also
-needs its Wayland, FreeType, xkbcommon and rendering development dependencies,
-plus basu/sd-bus and PipeWire for the default feature set. Use the release's
-[README/build instructions](https://git.pika-os.com/otter-shell/otter-bar/src/tag/v0.11.113/README.md)
-and PikaOS packaging build dependencies for your installed platform.
-
-```sh
-zig version
+zig build --fetch=all
 zig build -Doptimize=ReleaseFast
 zig build test
 ```
 
-Use this project's `./test.sh` for ABI smoke testing. The inspected upstream
-`plugin-abi-smoke` constructs a host with a null `sd_bar_item`; this icon plugin
-correctly rejects that stub, so that upstream smoke target is not applicable
-without giving its mock host a bar-item callback.
+For fish, use `set PLUGIN_DIR "$PWD"` for the first line. This host release needs
+**Zig 0.16.0**, network access for its pinned dependencies, and native development
+libraries. Follow the [upstream build requirements](https://git.pika-os.com/otter-shell/otter-bar/src/tag/v0.11.113/README.md).
+Prefetching avoids an upstream lazy-dependency initialization failure encountered
+during the build; failed dependency downloads must be resolved before compiling.
 
-After stopping your existing bar, test the local host from a niri terminal:
+After stopping your existing bar, run `./zig-out/bin/otter-bar` **from that source
+checkout**. Keep its build cache: this release may embed relative paths to built
+shared libraries. Merely restarting `/usr/bin/otter-bar` uses the packaged build.
 
-```sh
-OTTER_PLUGIN_PATH="$PLUGIN_DIR/build/plugins" ./zig-out/bin/otter-bar
-```
+The patch applies cleanly to the target release. A local host build containing
+it passed upstream tests; on-screen behavior of that custom host is not fully
+validated. Hidden Wayland surfaces may still delay redraws. The patch is a
+workaround until Otter offers a suitable scheduling API.
 
-Keep the local host separate from `/usr/bin/otter-bar`. To revert, stop that local
-host and restart your normal packaged bar. Recheck the patch before applying it
-to a newer release; do not force a failed patch.
+**Updates:** a local patched build does not automatically receive package
+updates. Recheck and rebuild the patch against newer source versions; never
+force a patch that fails its check. Installing the plugin does not modify the
+system bar or its update mechanism.
 
-## Live acceptance checklist
+## Update or remove
 
-1. Open two Firefox windows and a terminal: expect two app icons. Focus either
-   Firefox window: its icon gets Otter's selected background.
-2. Click the terminal icon: it receives focus. Click Firefox: its last-focused
-   window receives focus. Click Firefox again: focus cycles to its other window.
-3. Close one Firefox window: the group remains. Close the last: the icon vanishes.
-4. Open an app on another workspace: it stays hidden until that workspace is
-   focused. Switch to an empty workspace: the group disappears. Counts and
-   click cycling must never include windows from another workspace.
-5. Open more than eight distinct apps on the current workspace: use `>` to reach
-   the remaining groups. Check that a short last page remains centered.
-6. Leave the pointer still and open/close/focus windows using keyboard shortcuts.
-   With the host patch, changes should appear around 100 ms plus frame/IPC delay.
-   Without it, expect redraw-dependent delays.
-7. Test your theme at 1× and 2× scale, restart the bar, and repeat with no windows.
-8. If using several monitors, verify each panel and click through both. Each
-   instance owns its sockets and page selection, so unloading one is independent.
+To update the plugin, run `git pull`, then `./install.sh`, and restart the bar.
 
-No auto-launch, close-window button, pinning, tooltip, drag/reorder, window preview,
-per-output filtering, or settings UI is implemented in this version.
+To remove it, delete `plugin:running-apps` from your layout, set
+`running-apps_enabled = false`, and restart the bar. You can then delete the
+user plugin directory. No system package is modified by the installer.
 
-## Troubleshooting and removal
+## Source and license
 
-- Empty panel: confirm `NIRI_SOCKET` in the **bar's** launch environment, plugin
-  enable key, `plugin:running-apps` layout, current host ABI, and refresh patch.
-- Generic icon: inspect the app's niri `app_id` and matching `.desktop` file's
-  `Icon=`/`StartupWMClass`. Absolute image paths use the generic icon in v1.
-- Blank matched icon: choose an installed icon-theme name in the desktop entry.
-  Otter owns rendering and this ABI has no lookup-result query.
-- Focus races with a closing window: harmless; niri rejects the stale request.
-  The plugin never changes the highlight until it sees compositor state.
-- High idle draw rate: expected with the 100 ms host workaround; use 250 ms or
-  revert the patch and accept delayed updates pending an upstream scheduling API.
+| Path | Purpose |
+| --- | --- |
+| `src/plugin.cpp` | Otter ABI, centered layout, badges and click handling |
+| `src/core.hpp` | niri window state, grouping and focus selection |
+| `src/ipc.hpp` | Nonblocking IPC, framing and reconnects |
+| `src/icons.hpp` | Desktop-entry icon lookup |
+| `tests/` | Model tests and compiled-plugin integration tests |
+| `patches/` | Optional Otter host refresh patch |
 
-To disable, remove `plugin:running-apps` from the layout, set
-`running-apps_enabled = false`, and restart the bar. Then remove the user plugin
-directory if desired. The installer does not modify any system package.
+[MIT licensed](LICENSE). The bundled Otter ABI header and nlohmann/json v3.12.0
+retain their [Otter](include/OTTER-LICENSE) and [JSON](include/JSON-LICENSE)
+license notices. Dependency checksums are in [VENDORED.sha256](VENDORED.sha256).
 
-## Project map and licenses
-
-- `src/plugin.cpp`: C ABI, render cells, stable per-frame click mapping, paging.
-- `src/core.hpp`: window state, grouping, and focus selection.
-- `src/ipc.hpp`: bounded nonblocking sockets, framing, retries, action queue.
-- `src/icons.hpp`: XDG desktop-entry icon indexing.
-- `include/otter_plugin_abi.h`: verbatim upstream ABI header (Otter MIT license).
-- `include/json.hpp`: nlohmann/json v3.12.0 (MIT license).
-- `tests/`: unit and black-box integration tests.
-- `patches/`: main-thread host refresh workaround.
-
-Project code is MIT licensed; dependency notices are in `include/`.
-
-Window positions follow [niri’s documented layout coordinates](https://niri-wm.github.io/niri/niri_ipc/struct.WindowLayout.html).
-
-Workspace selection follows [niri workspace events](https://niri-wm.github.io/niri/niri_ipc/enum.Event.html).
+References: [Otter plugin API](https://docs.otter-shell.org/developers/plugins),
+[Otter examples](https://git.pika-os.com/otter-shell/otter-shell-plugins),
+[niri IPC](https://github.com/niri-wm/niri/wiki/IPC).
