@@ -14,12 +14,14 @@ unsigned slots = 8;
 struct Instance {
     OtterPluginBarInstance bar{};
     const OtterPluginHost* host;
-    Client client{env("NIRI_SOCKET")};
+    Client client;
     std::map<uint64_t, std::string> hits;
     uint64_t next_hit = 1;
     size_t page = 0;
     std::optional<Id> displayed_workspace;
-    explicit Instance(const OtterPluginHost* h) : host(h) {}
+    explicit Instance(const OtterPluginHost* h) : host(h), client(env("NIRI_SOCKET"), [h](const char* message) {
+        if (h->log) h->log(h->userdata, 2, message);
+    }) {}
 };
 uint32_t width(void*, const OtterPluginSlotConstraints*) {
     // Fixed reservation: current host doesn't remeasure plugin widths on IPC events.

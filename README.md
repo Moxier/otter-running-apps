@@ -88,7 +88,9 @@ Only apps with open windows appear—not background or tray-only processes.
 - **Newly installed app:** restart the bar to refresh the desktop-entry index.
 - **Empty or delayed panel:** check the enable key, layout, host compatibility,
   and `NIRI_SOCKET` in the bar's environment. Try `niri msg --json windows` in a
-  terminal inside your niri session. See the refresh limitation above.
+  terminal inside your niri session. IPC parsing and protocol failures are reported
+  through Otter’s host logger; check the bar’s captured logs or terminal output.
+  See the refresh limitation above.
 - **After restarting niri:** restart the bar from the new session if the socket
   path changed. Disconnects otherwise clear stale icons and retry every second.
 
@@ -114,11 +116,12 @@ they do not manipulate your desktop. See [validation notes](VALIDATION.md).
 For a separate read-only probe against your real niri session:
 
 ```sh
-c++ -std=c++17 -Iinclude tests/probe.cpp -ldl -o build/live-probe
+make probe
 ./build/live-probe ./build/plugins/running-apps/libotter_plugin_running_apps.so
 ```
 
-This reports rendered cell counts without sending focus actions. Zero cells can
+`make probe` only compiles the tool. Running it uses the session’s `NIRI_SOCKET`
+and reports rendered cell counts without sending focus actions. Zero cells can
 also mean an unavailable socket; it is a basic diagnostic, not a full UI test.
 
 ## Host integration

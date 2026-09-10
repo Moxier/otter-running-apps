@@ -67,27 +67,44 @@ public:
         if (j.contains("layout")) w.position = position(j.at("layout"));
         return w;
     }
-    // Apply on a copy: a malformed snapshot never partially replaces valid state.
+    // Validate incremental events before mutation; keep replacement events transactional.
     bool apply(const Json& e) {
-        if (!e.contains("WindowsChanged") && !e.contains("WindowOpenedOrChanged") &&
-            !e.contains("WindowClosed") && !e.contains("WindowFocusChanged") &&
-            !e.contains("WindowLayoutsChanged") && !e.contains("WorkspacesChanged") &&
-            !e.contains("WorkspaceActivated")) return false;
-        Model next = *this;
         if (e.contains("WorkspaceActivated")) {
             const auto& activation = e.at("WorkspaceActivated");
             Id id = id_value(activation.at("id"));
-            if (activation.at("focused").get<bool>()) next.focused_workspace = id;
+            if (activation.at("focused").get<bool>()) focused_workspace = id;
+            return true;
         } else if (e.contains("WindowLayoutsChanged")) {
             const auto& changes = e.at("WindowLayoutsChanged").at("changes");
             if (!changes.is_array() || changes.size() > 16384) throw std::runtime_error("invalid layouts");
+            std::vector<std::pair<Id, std::optional<std::pair<Id, Id>>>> updates;
+            updates.reserve(changes.size());
             for (const auto& change : changes) {
                 if (!change.is_array() || change.size() != 2) throw std::runtime_error("invalid layout change");
                 Id id = id_value(change[0]);
                 auto pos = position(change[1]);
-                if (auto it = next.windows.find(id); it != next.windows.end()) it->second.position = pos;
+                updates.emplace_back(id, pos);
             }
-        } else if (e.contains("WorkspacesChanged")) {
+            // No parsing or allocation remains once we start applying the batch.
+            for (const auto& [id, pos] : updates)
+                if (auto it = windows.find(id); it != windows.end()) it->second.position = pos;
+            return true;
+        }
+        // Preserve precedence when an object contains multiple event keys.
+        if (!e.contains("WorkspacesChanged") && !e.contains("WindowsChanged") &&
+            !e.contains("WindowOpenedOrChanged")) {
+            if (e.contains("WindowClosed")) {
+                Id id = id_value(e.at("WindowClosed").at("id"));
+                windows.erase(id);
+            } else if (e.contains("WindowFocusChanged")) {
+                const auto& value = e.at("WindowFocusChanged").at("id");
+                auto id = value.is_null() ? std::nullopt : std::optional<Id>(id_value(value));
+                focus(id);
+            } else return false; // Future niri events and extra fields are harmless.
+            return true;
+        }
+        Model next = *this;
+        if (e.contains("WorkspacesChanged")) {
             const auto& list = e.at("WorkspacesChanged").at("workspaces");
             if (!list.is_array() || list.size() > 16384) throw std::runtime_error("invalid workspaces");
             next.workspaces.clear();
@@ -115,12 +132,7 @@ public:
             if (next.windows.size() >= 16384 && !next.windows.count(w.id)) throw std::runtime_error("too many windows");
             next.windows[w.id] = w;
             if (w.focused) next.focus(w.id);
-        } else if (e.contains("WindowClosed")) {
-            next.windows.erase(id_value(e.at("WindowClosed").at("id")));
-        } else if (e.contains("WindowFocusChanged")) {
-            const auto& id = e.at("WindowFocusChanged").at("id");
-            next.focus(id.is_null() ? std::nullopt : std::optional<Id>(id_value(id)));
-        } else return false; // Future niri events and extra fields are harmless.
+        }
         *this = std::move(next);
         return true;
     }

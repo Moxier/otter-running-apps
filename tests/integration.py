@@ -16,6 +16,7 @@ class Event(C.Structure):
     _fields_ = [('kind', C.c_uint32), ('hit_data', C.c_uint64), ('text', C.c_char_p), ('text_len', C.c_uint32), ('reserved', C.c_uint32)]
 class Manifest(C.Structure):
     _fields_ = [('id', C.c_char_p), ('name', C.c_char_p), ('version', C.c_char_p), ('abi', C.c_uint32), ('bar', C.c_uint8), ('launcher', C.c_uint8), ('rows', C.c_uint8), ('settings', C.c_uint8)]
+LOG = C.CFUNCTYPE(None, C.c_void_p, C.c_int, C.c_char_p)
 FRAME = C.CFUNCTYPE(None, C.c_void_p)
 ITEM = C.CFUNCTYPE(C.c_int, C.c_void_p, C.c_char_p, C.POINTER(Rect), C.c_char_p, C.c_uint32, C.c_char_p, C.c_uint32, C.c_uint64)
 WIDTH = C.CFUNCTYPE(C.c_uint32, C.c_void_p, C.POINTER(Constraints))
@@ -57,7 +58,11 @@ def badge_label(frame, node, rect, text, font, color):
 def badge_hit(frame, node, rect, hit):
     badge_hits.append(hit)
     return 0
-host = Host(1, None, None, request, C.cast(badge_rect, C.c_void_p), C.cast(badge_label, C.c_void_p), C.cast(badge_hit, C.c_void_p), None, item)
+logs = []
+@LOG
+def log(userdata, level, message):
+    logs.append((level, message))
+host = Host(1, None, C.cast(log, C.c_void_p), request, C.cast(badge_rect, C.c_void_p), C.cast(badge_label, C.c_void_p), C.cast(badge_hit, C.c_void_p), None, item)
 constraints = Constraints(Rect(0, 0, 288, 32), Rect(0, 0, 288, 32))
 
 def window(i, app, active=False, workspace=10):
@@ -160,7 +165,22 @@ with tempfile.TemporaryDirectory() as temp:
     send({'WorkspacesChanged': {'workspaces': [{'id': 10, 'idx': 1, 'output': 'DP-1', 'is_focused': True}]}})
     send({'WindowsChanged': {'windows': [window(123, 'firefox')]}})
     assert len(draw()) == 1
+    assert logs == []
     events.sendall(b'not-json\n'); assert draw() == []
+    assert len(logs) == 1 and b'malformed JSON' in logs[-1][1]
+    events.close()
+    # Protocol errors retain the same delayed reconnect and snapshot recovery.
+    time.sleep(1.02); draw(); events, _ = server.accept(); events.settimeout(1)
+    assert events.recv(100) == b'"EventStream"\n'
+    send({'WorkspacesChanged': {'workspaces': [{'id': 10, 'idx': 1, 'output': 'DP-1', 'is_focused': True}]}})
+    send({'WindowsChanged': {'windows': [window(123, 'firefox')]}})
+    rendered = draw(); assert len(rendered) == 1
+    click(rendered[0][3]); action, _ = server.accept(); action.settimeout(1)
+    assert action.recv(200)
+    action.sendall(b'{}\n'); draw(); action.close()
+    assert b'action reply processing failed: invalid action reply' in logs[-1][1]
+    send({'WindowClosed': {'id': -1}}); assert draw() == []
+    assert b'event processing failed: invalid window id' in logs[-1][1]
     events.close()
     vt.destroy(instance.data)
     lib.otter_plugin_deinit()

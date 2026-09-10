@@ -3,6 +3,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cstring>
+#include <cstdio>
 #include <functional>
 #include <poll.h>
 #include <sys/socket.h>
@@ -15,14 +16,23 @@ inline int64_t now_ms() {
         std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 // Main-thread only. No blocking reads, worker callbacks, subprocesses, or signals.
+using IpcLog = std::function<void(const char*)>;
 class Channel {
+    IpcLog log;
+    void report(const char* context, const char* detail) const noexcept {
+        if (!log) return;
+        char message[384];
+        std::snprintf(message, sizeof(message), "running-apps IPC %s: %.256s", context, detail);
+        // Logging must never prevent channel teardown, even if a callback throws.
+        try { log(message); } catch (...) {}
+    }
     int fd = -1;
     bool connecting = false;
     std::string output, input;
     size_t sent = 0;
     int64_t deadline = 0;
 public:
-    Channel() = default;
+    explicit Channel(IpcLog logger = {}) : log(std::move(logger)) {}
     Channel(const Channel&) = delete;
     Channel& operator=(const Channel&) = delete;
     ~Channel() { close(); }
@@ -66,11 +76,20 @@ public:
             auto end = input.find('\n');
             if (end != std::string::npos) {
                 auto payload = input.substr(0, end); input.erase(0, end + 1);
+                const char* context = "malformed JSON from niri";
                 try {
                     auto j = Json::parse(payload);
+                    context = "niri Err reply";
                     if (j.contains("Err")) throw std::runtime_error("niri rejected request");
+                    context = stream ? "event processing failed" : "action reply processing failed";
                     line(j);
-                } catch (...) { close(); return false; }
+                } catch (const std::exception& e) {
+                    report(context, e.what());
+                    close(); return false;
+                } catch (...) {
+                    report(context, "unknown IPC processing exception");
+                    close(); return false;
+                }
                 ++lines;
                 if (!stream) { close(); return true; }
                 deadline = 0; // Event streams may be silent indefinitely.
@@ -90,12 +109,14 @@ public:
 class Client {
     Channel events, action;
     int64_t retry = 0;
+    // Pending focus requests intentionally coalesce: the most recent click wins.
     std::optional<Id> queued;
 public:
     Model model;
     bool connected = false;
     std::string path;
-    explicit Client(std::string socket_path) : path(std::move(socket_path)) {}
+    explicit Client(std::string socket_path, IpcLog log = {})
+        : events(log), action(std::move(log)), path(std::move(socket_path)) {}
     void tick(int64_t now) {
         if (!events.open() && now >= retry) {
             events.start(path, "\"EventStream\"\n", now);
